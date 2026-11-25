@@ -7,10 +7,18 @@ statuses:
     title: Single new platform
     status: skip
     message: Not checked on release PRs.
+  - id: forbidden-files
+    title: Forbidden files
+    status: skip
+    message: Only checked on PRs into `dev`.
   - id: docs-missing
     title: Documentation
     status: skip
     message: Not checked on release PRs.
+  - id: belongs-together
+    title: Belongs together
+    status: skip
+    message: No pull requests listed.
   - id: merge-conflict
     title: Merge conflicts
     status: pass
@@ -18,11 +26,11 @@ statuses:
   - id: merge-target
     title: Merge target
     status: warn
-    message: This PR targets `master` (release branch).
+    message: This PR targets `master`, not `dev`.
   - id: code-owner-approval
     title: Code owner approval
     status: skip
-    message: Not a platinum integration — no code-owner approval required.
+    message: Touches no platinum integration — no code-owner approval required.
   - id: type-of-change
     title: Type of change
     status: skip

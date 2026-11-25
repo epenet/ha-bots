@@ -17,6 +17,7 @@ const IntegrationManifestSchema = z.object({
   domain: z.string(),
   name: z.string(),
   quality_scale: z.nativeEnum(QualityScale).optional(),
+  integration_type: z.string().optional(),
   config_flow: z.boolean().default(false),
   dependencies: z.array(z.string()).default([]),
   after_dependencies: z.array(z.string()).default([]),
@@ -51,6 +52,10 @@ const MANIFEST_TTL_MS = 6 * 60 * 60 * 1000;
 // must not stay invisible for six hours.
 const MISS_TTL_MS = 5 * 60 * 1000;
 
+// Core's domain grammar. Callers pass user input (command arguments, link
+// segments, directory names), which otherwise ends up in the fetched URL.
+const DOMAIN = /^[a-z0-9_]+$/;
+
 /** Cross-event cache, one entry per domain (~1500 at most). */
 const byDomain = new Map<string, { manifest?: IntegrationManifest; fetchedAt: number }>();
 const inflight = new Map<string, Promise<IntegrationManifest | undefined>>();
@@ -76,6 +81,7 @@ async function fetchFromDev(domain: string): Promise<IntegrationManifest | undef
  * there. Cached across deliveries; concurrent readers share one fetch.
  */
 export function fetchIntegrationManifest(domain: string): Promise<IntegrationManifest | undefined> {
+  if (!DOMAIN.test(domain)) return Promise.resolve(undefined);
   const cached = byDomain.get(domain);
   if (cached) {
     const ttl = cached.manifest ? MANIFEST_TTL_MS : MISS_TTL_MS;

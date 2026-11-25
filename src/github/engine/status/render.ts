@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import Mustache from "mustache";
 import { log } from "../../../log.js";
+import { neutraliseMentions } from "../../../util/markdown.js";
 import { type CommandHelpEntry, commandsForTarget, commandViews } from "../command-render.js";
 import type { BlockStates } from "./blocks.js";
 import {
@@ -35,7 +36,7 @@ function friendlyName(repo: string): string {
 
 const STATUS_ICONS: Record<SectionStatus, string> = {
   pass: ":white_check_mark:",
-  pending: ":hourglass:",
+  pending: ":eyes:",
   warn: ":warning:",
   fail: ":x:",
   skip: ":heavy_minus_sign:",
@@ -89,7 +90,8 @@ export function placeholderBody(): string {
  */
 export function displaySection(s: StatusSection): StatusSection {
   if (!s.ignored || (s.status !== "fail" && s.status !== "pending")) return s;
-  return { ...s, status: "warn", message: `${s.message}\nIgnored: ${s.ignored.reason}` };
+  const reason = neutraliseMentions(s.ignored.reason);
+  return { ...s, status: "warn", message: `${s.message}\nIgnored: ${reason}` };
 }
 
 function escapeTableCell(s: string): string {
@@ -125,7 +127,7 @@ export function renderStatus(
   const warning = display.filter((s) => s.status === "warn");
   const failing = display.filter((s) => s.status === "fail");
   const skipped = display.filter((s) => s.status === "skip");
-  const visible = [...failing, ...warning, ...pending];
+  const visible = [...failing, ...warning];
   const collapsed = [...passing, ...skipped];
 
   // The whole persisted state (raw sections with waivers, block args, and the
@@ -152,6 +154,8 @@ export function renderStatus(
     hasFailures: failing.length > 0,
     hasVisibleRows: visible.length > 0,
     visibleRows: visible.map(rowView),
+    hasWaitingRows: pending.length > 0,
+    waitingRows: pending.map(rowView),
     hasCollapsedRows: collapsed.length > 0,
     collapsedRows: collapsed.map(rowView),
     collapsedSummary: summarizePassedSkipped(passing.length, skipped.length),

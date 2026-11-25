@@ -18,11 +18,21 @@ type HandledEvent =
   | EventType.ISSUES_ON_DEMAND
   | EventType.ON_DEMAND;
 
-// One ping per item: a comment carrying this marker means owners were already
-// mentioned, and no further mention comments are posted — even if new
-// integrations or code owners show up later. Assignment can fail silently
-// (owners without repo access), so comment presence is the only reliable state.
+// One mention comment per item: a comment carrying this marker means owners
+// were already mentioned. Assignment can fail silently (owners without repo
+// access), so comment presence is the only reliable state.
 export const MENTION_MARKER = "<!-- ha-bot-mention -->";
+
+// The integrations a mention comment covers, so a later dispatch can tell
+// whether the list changed and edit the comment instead of posting another.
+// Comments without it (legacy bot, older deploys) cover nothing, so they get rewritten.
+const COVERED_PATTERN = /<!-- ha-bot-mention-integrations: ([a-z0-9_,]*) -->/;
+
+function coveredIntegrations(body: string | null | undefined): Set<string> | undefined {
+  const match = body?.match(COVERED_PATTERN);
+  if (!match) return;
+  return new Set(match[1].split(",").filter(Boolean));
+}
 
 // The legacy bot's CodeOwnersMention comments carry no marker, so they're
 // recognized by their template prose instead — the raw markdown including the
@@ -80,7 +90,10 @@ export function mentionCodeOwners(config: {
    * links), injected by the manifest.
    */
   domains: (ctx: RuleContext<EventType>) => Promise<string[]>;
-  itemLabel?: string;
+  /** What the comment calls an issue; PRs are always "pull request". */
+  issueLabel?: string;
+  /** Off where GitHub already requests the owners' review from CODEOWNERS. */
+  assignPullRequests?: boolean;
 }): Rule {
   async function handle(ctx: RuleContext<HandledEvent>): Promise<RuleOutput | undefined> {
     if (isNonIntegrationLabelEvent(ctx)) return;
@@ -88,7 +101,8 @@ export function mentionCodeOwners(config: {
     // Never mention or assign on closed items — label events and ON_DEMAND fire on them too.
     if ((await ctx.target.state()) !== "open") return;
 
-    const integrationNames = await config.domains(ctx);
+    // Alphabetical, so the comment doesn't depend on label or file order.
+    const integrationNames = [...(await config.domains(ctx))].sort();
     if (integrationNames.length === 0) return;
 
     // The rule is only registered on repos that have a CODEOWNERS file, so a
@@ -99,31 +113,46 @@ export function mentionCodeOwners(config: {
     }
 
     const comments = await ctx.target.issueComments();
-    if (comments.some((c) => ctx.isOwnComment(c) && isMentionComment(c.body))) return;
+    const existing = comments.find((c) => ctx.isOwnComment(c) && isMentionComment(c.body));
+    const covered = coveredIntegrations(existing?.body) ?? new Set<string>();
 
     const authorLogin = (await ctx.target.authorLogin()).toLowerCase();
+    const owned = integrationNames
+      .map((name) =>
+        ownedIntegration(ctx, name, codeownersContent, config.pathPattern, authorLogin),
+      )
+      .filter((o) => o !== undefined);
+    if (
+      existing &&
+      owned.length === covered.size &&
+      owned.every((o) => covered.has(o.integrationName))
+    ) {
+      return;
+    }
+
     const assignees = (await ctx.target.assigneeLogins()).map((a) => a.toLowerCase());
     const commenters = comments.map((c) => c.user?.login?.toLowerCase() ?? "");
+    // Owners the comment already names stay in it; they've been pinged.
+    const alreadyMentioned = new Set(existing?.body?.toLowerCase().match(/@[\w/-]+/g));
 
-    const itemLabel = config.itemLabel ?? (ctx.target.kind === "issue" ? "issue" : "pull request");
+    const itemLabel = ctx.target.kind === "issue" ? (config.issueLabel ?? "issue") : "pull request";
 
+    const assign = ctx.target.kind === "issue" || (config.assignPullRequests ?? true);
     const toAssign = new Set<string>();
     const mentioned: { integrationName: string; codeownersLine: string; mentions: string }[] = [];
-    for (const integrationName of integrationNames) {
-      const owned = ownedIntegration(
-        ctx,
-        integrationName,
-        codeownersContent,
-        config.pathPattern,
-        authorLogin,
-      );
-      if (!owned) continue;
-      for (const usr of owned.owners) toAssign.add(usr);
-      const mentions = owned.owners
-        .filter((usr) => !assignees.includes(usr) && !commenters.includes(usr))
+    for (const o of owned) {
+      if (assign && !covered.has(o.integrationName)) {
+        for (const usr of o.owners) if (!assignees.includes(usr)) toAssign.add(usr);
+      }
+      const mentions = o.owners
+        .filter(
+          (usr) =>
+            alreadyMentioned.has(`@${usr}`) ||
+            (!assignees.includes(usr) && !commenters.includes(usr)),
+        )
         .map((usr) => `@${usr}`);
       if (mentions.length > 0) {
-        mentioned.push({ ...owned, mentions: mentions.join(", ") });
+        mentioned.push({ ...o, mentions: mentions.join(", ") });
       }
     }
 
@@ -133,24 +162,27 @@ export function mentionCodeOwners(config: {
     }
     if (mentioned.length > 0) {
       const applicable = commandsForTarget(ctx.repoConfig.commands, ctx.target.kind);
-      effects.push({
-        type: "comment",
-        // Escaping disabled: the output is markdown, not HTML.
-        body: Mustache.render(
-          MENTION_TEMPLATE,
-          {
-            itemLabel,
-            single: mentioned.length === 1 ? mentioned[0] : null,
-            integrations: mentioned,
-            codeownersUrl: `https://github.com/${ctx.repo.fullName}/blob/HEAD/CODEOWNERS`,
-            commandSlug: ctx.env.COMMAND_SLUG,
-            hasCommands: applicable.length > 0,
-            commands: commandViews(ctx.env.COMMAND_SLUG, applicable),
-          },
-          undefined,
-          { escape: String },
-        ),
-      });
+      // Escaping disabled: the output is markdown, not HTML.
+      const body = Mustache.render(
+        MENTION_TEMPLATE,
+        {
+          itemLabel,
+          covered: owned.map((o) => o.integrationName).join(","),
+          single: mentioned.length === 1 ? mentioned[0] : null,
+          integrations: mentioned,
+          codeownersUrl: `https://github.com/${ctx.repo.fullName}/blob/HEAD/CODEOWNERS`,
+          commandSlug: ctx.env.COMMAND_SLUG,
+          hasCommands: applicable.length > 0,
+          commands: commandViews(ctx.env.COMMAND_SLUG, applicable),
+        },
+        undefined,
+        { escape: String },
+      );
+      effects.push(
+        existing
+          ? { type: "updateComment", commentId: existing.id, body }
+          : { type: "comment", body },
+      );
     }
 
     return effects.length > 0 ? { effects } : undefined;

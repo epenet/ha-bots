@@ -68,7 +68,6 @@ describe("contextFromWebhook", () => {
     expect(await pr.headSha()).toBe("abc123");
     expect(await pr.baseRef()).toBe("dev");
     expect(await pr.merged()).toBe(false);
-    expect(await pr.authorAssociation()).toBe("CONTRIBUTOR");
     expect(github.pulls.get).not.toHaveBeenCalled();
   });
 
@@ -217,6 +216,37 @@ describe("contextFromWebhook", () => {
       EventType.PULL_REQUEST_OPENED,
     );
     expect(ha.senderIsBot).toBe(true);
+  });
+
+  it("describes the item for the log context with a link to it", () => {
+    const github = createFakeGitHub();
+    const pr = ruleContextFromWebhook(
+      testEnv,
+      EMPTY_REGISTRY,
+      github.octokit,
+      prPayload(),
+      EventType.PULL_REQUEST_OPENED,
+    );
+    expect(pr.logContext).toEqual({
+      repository: "home-assistant/core",
+      number: 42,
+      url: "https://github.com/home-assistant/core/pull/42",
+      eventType: EventType.PULL_REQUEST_OPENED,
+    });
+
+    const issue = ruleContextFromWebhook(
+      testEnv,
+      EMPTY_REGISTRY,
+      github.octokit,
+      {
+        action: "opened",
+        sender: { login: "reporter", type: "User" },
+        repository,
+        issue: { number: 3, labels: [], user: { login: "reporter" }, assignees: [] },
+      } as unknown as WebhookEventPayload,
+      EventType.ISSUES_OPENED,
+    );
+    expect(issue.logContext.url).toBe("https://github.com/home-assistant/core/issues/3");
   });
 });
 

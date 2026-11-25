@@ -79,25 +79,22 @@ describe("new-integration-validation", () => {
 
     const result = await runRule(newIntegrationValidation, context);
     expect(result?.section?.status).toBe("fail");
-    expect(result?.section?.message).toContain("single platform");
+    expect(result?.section?.message).toMatch(
+      /^A new integration starts with a single platform, but this PR adds `light` and `sensor`\./,
+    );
   });
 
-  it("fails when brand folder is included", async () => {
-    const context = createMockContext({
-      eventType: EventType.ON_DEMAND,
-      payload: {
-        label: { name: "new-integration" },
-        pull_request: { head: { sha: "abc123" }, labels: [{ name: "new-integration" }] },
-      },
-    });
+  it("ignores platforms and diagnostics of existing integrations the PR touches", async () => {
+    const context = newIntegrationContext();
     mockPRFiles(context, [
-      makeFile("homeassistant/components/mydevice/__init__.py"),
-      makeFile("homeassistant/components/mydevice/brand/icon.png"),
+      makeFile("homeassistant/components/device_type/__init__.py"),
+      makeFile("homeassistant/components/kitchen_sink/sensor.py", "modified"),
+      makeFile("homeassistant/components/kitchen_sink/switch.py", "modified"),
+      makeFile("homeassistant/components/kitchen_sink/diagnostics.py", "modified"),
     ]);
 
     const result = await runRule(newIntegrationValidation, context);
-    expect(result?.section?.status).toBe("fail");
-    expect(result?.section?.message).toContain("brand");
+    expect(result?.section).toMatchObject({ id: "new-integration-validation", status: "pass" });
   });
 
   it("fails when diagnostics are included", async () => {
@@ -134,7 +131,99 @@ describe("new-integration-validation", () => {
     expect(result?.section).toMatchObject({ id: "new-integration-validation", status: "skip" });
   });
 
-  it("reports both issues when multiple platforms AND brand folder", async () => {
+  function newIntegrationContext() {
+    return createMockContext({
+      eventType: EventType.ON_DEMAND,
+      payload: {
+        label: { name: "new-integration" },
+        pull_request: { head: { sha: "abc123" }, labels: [{ name: "new-integration" }] },
+      },
+    });
+  }
+
+  const MIGRATE_ENTRY_INIT = [
+    "async def async_setup_entry(hass, entry):",
+    "    return True",
+    "",
+    "",
+    "async def async_migrate_entry(hass, entry):",
+    "    return True",
+  ].join("\n");
+
+  function patchOf(content: string): string {
+    return `@@ -0,0 +1,${content.split("\n").length} @@\n${content
+      .split("\n")
+      .map((line) => `+${line}`)
+      .join("\n")}`;
+  }
+
+  it("fails when the new integration defines async_migrate_entry", async () => {
+    const context = newIntegrationContext();
+    mockPRFiles(context, [
+      {
+        ...makeFile("homeassistant/components/mydevice/__init__.py"),
+        patch: patchOf(MIGRATE_ENTRY_INIT),
+      },
+      makeFile("homeassistant/components/mydevice/sensor.py"),
+    ]);
+
+    const result = await runRule(newIntegrationValidation, context);
+    expect(result?.section?.status).toBe("fail");
+    expect(result?.section?.message).toContain("async_migrate_entry");
+  });
+
+  it("reads __init__.py at the head commit when the patch is omitted", async () => {
+    const github = createFakeGitHub({
+      contents: { "homeassistant/components/mydevice/__init__.py": MIGRATE_ENTRY_INIT },
+    });
+    const context = createMockContext({
+      github,
+      eventType: EventType.ON_DEMAND,
+      payload: {
+        label: { name: "new-integration" },
+        pull_request: { head: { sha: "abc123" }, labels: [{ name: "new-integration" }] },
+      },
+    });
+    mockPRFiles(context, [
+      makeFile("homeassistant/components/mydevice/__init__.py"),
+      makeFile("homeassistant/components/mydevice/sensor.py"),
+    ]);
+
+    const result = await runRule(newIntegrationValidation, context);
+    expect(result?.section?.status).toBe("fail");
+    expect(result?.section?.message).toContain("async_migrate_entry");
+  });
+
+  it("passes when the new integration has no async_migrate_entry", async () => {
+    const context = newIntegrationContext();
+    mockPRFiles(context, [
+      {
+        ...makeFile("homeassistant/components/mydevice/__init__.py"),
+        patch: patchOf("async def async_setup_entry(hass, entry):\n    return True"),
+      },
+      makeFile("homeassistant/components/mydevice/sensor.py"),
+    ]);
+
+    const result = await runRule(newIntegrationValidation, context);
+    expect(result?.section?.status).toBe("pass");
+  });
+
+  it("ignores async_migrate_entry in existing integrations the PR touches", async () => {
+    const context = newIntegrationContext();
+    mockPRFiles(context, [
+      makeFile("homeassistant/components/mydevice/__init__.py"),
+      makeFile("homeassistant/components/mydevice/sensor.py"),
+      {
+        ...makeFile("homeassistant/components/other/__init__.py", "modified"),
+        patch: patchOf(MIGRATE_ENTRY_INIT),
+      },
+    ]);
+
+    const result = await runRule(newIntegrationValidation, context);
+    expect(result?.section?.message).not.toContain("async_migrate_entry");
+  });
+
+  it("reports both issues when multiple platforms AND diagnostics", async () => {
     const context = createMockContext({
       eventType: EventType.ON_DEMAND,
       payload: {
@@ -146,13 +235,13 @@ describe("new-integration-validation", () => {
       makeFile("homeassistant/components/mydevice/__init__.py"),
       makeFile("homeassistant/components/mydevice/sensor.py"),
       makeFile("homeassistant/components/mydevice/light.py"),
-      makeFile("homeassistant/components/mydevice/brand/icon.png"),
+      makeFile("homeassistant/components/mydevice/diagnostics.py"),
     ]);
 
     const result = await runRule(newIntegrationValidation, context);
     expect(result?.section?.status).toBe("fail");
     expect(result?.section?.message).toContain("single platform");
-    expect(result?.section?.message).toContain("brand");
+    expect(result?.section?.message).toContain("diagnostics.py");
   });
 
   it("skips release PRs", async () => {
