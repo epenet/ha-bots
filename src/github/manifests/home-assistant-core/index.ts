@@ -25,7 +25,6 @@ import type { RepoManifest } from "../types.js";
 import { coreForbiddenFiles } from "./forbidden-files.js";
 import { domainsFromFiles } from "./helpers/integration-domains.js";
 import { coreIssueContext } from "./issue-context.js";
-import { bumpTitle } from "./rules/bump-title.js";
 import { changeType } from "./rules/change-type.js";
 import { dependencyBump } from "./rules/dependency-bump.js";
 import { docsPrPresent } from "./rules/docs-pr-present.js";
@@ -38,6 +37,7 @@ import { newIntegrationValidation } from "./rules/new-integration-validation.js"
 import { platinumApproval } from "./rules/platinum-approval.js";
 import { qualityScale } from "./rules/quality-scale.js";
 import { singleNewPlatform } from "./rules/single-new-platform.js";
+import { title } from "./rules/title.js";
 
 const componentCodeowners = (domain: string) => `homeassistant/components/${domain}/*`;
 const domains = integrationDomains(domainsFromFiles);
@@ -87,7 +87,7 @@ export const homeAssistantCore: RepoManifest = {
     changeType,
     fileShape,
     dependencyBump,
-    bumpTitle,
+    title,
     blockingLabels({
       "awaiting-frontend": { message: "This PR is awaiting changes to the frontend" },
     }),
